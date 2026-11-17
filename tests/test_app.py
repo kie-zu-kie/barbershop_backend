@@ -153,6 +153,13 @@ def test_health_endpoint_checks_database(client):
     assert response.get_json() == {"status": "ok", "database": "connected"}
 
 
+def test_root_health_endpoint_reports_app_status(client):
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"status": "ok"}
+
+
 def test_api_allows_configured_frontend_origin_with_credentials(client):
     response = client.options(
         "/api/auth/login",

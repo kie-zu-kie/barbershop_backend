@@ -13,8 +13,9 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
-The API listens at <http://127.0.0.1:5000>; its health endpoint is
-<http://127.0.0.1:5000/api/health>.
+The API listens at <http://127.0.0.1:5000>. The basic health endpoint is
+<http://127.0.0.1:5000/health>; <http://127.0.0.1:5000/api/health> also checks
+the database connection.
 
 Generate a session secret with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
@@ -28,8 +29,9 @@ For production, use HTTPS and set `SESSION_COOKIE_SECURE=true`.
 
 The included `Procfile` starts Gunicorn on the provider-assigned port. Use
 `pip install -r requirements.txt` as the build command and the Procfile as the
-start command. Configure a health check at `/api/health`. Set `DATABASE_URL`,
-`SECRET_KEY`, `PUBLIC_API_URL`, `FRONTEND_ORIGINS`, and
+start command. Configure a basic health check at `/health`; use `/api/health`
+to include the database connection check. Set `DATABASE_URL`, `SECRET_KEY`,
+`PUBLIC_API_URL`, `FRONTEND_ORIGINS`, and
 `SESSION_COOKIE_SECURE=true` in the host's environment settings.
 
 PostgreSQL connection strings starting with `postgres://` or `postgresql://`

@@ -51,6 +51,10 @@ def create_app(test_config=None):
     register_error_handlers(app)
     register_admin_commands(app)
 
+    @app.get("/health")
+    def health():
+        return {"status": "ok"}
+
     @app.get("/")
     @app.get("/api")
     def open_frontend():
