@@ -8,6 +8,7 @@ from flask import (
     Blueprint,
     current_app,
     jsonify,
+    render_template,
     request,
     send_from_directory,
     session,
@@ -32,6 +33,7 @@ from backend.models import (
     Service,
 )
 
+pages = Blueprint("pages", __name__)
 api = Blueprint("api", __name__)
 MAX_HAIRCUT_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_HAIRCUT_IMAGE_PIXELS = 25_000_000
@@ -117,7 +119,7 @@ def serialize_haircut(haircut):
         "barberId": str(haircut.barber_id),
         "title": haircut.title,
         "description": haircut.description or "",
-        "imageUrl": public_api_url("api.uploaded_image", filename=haircut.image_filename),
+        "imageUrl": url_for("pages.haircut_image", filename=haircut.image_filename),
         "createdAt": haircut.created_at.isoformat() if haircut.created_at else "",
     }
 
@@ -127,12 +129,8 @@ def profile_photo_url(profile_id, role):
     for extension in IMAGE_EXTENSIONS.values():
         filename = f"profile-{role}-{profile_id}{extension}"
         if (upload_folder / filename).is_file():
-            return public_api_url("api.uploaded_image", filename=filename)
+            return url_for("pages.haircut_image", filename=filename)
     return ""
-
-
-def public_api_url(endpoint, **values):
-    return f"{current_app.config['PUBLIC_API_URL']}{url_for(endpoint, **values)}"
 
 
 def normalize_profile_photo(image):
@@ -202,6 +200,20 @@ def serialize_appointment(appointment):
         "time": appointment.appointment_time.strftime("%H:%M"),
         "status": appointment.status,
         "notes": appointment.notes or "",
+    }
+
+
+def load_catalog():
+    services = db.session.scalars(
+        select(Service).where(Service.active.is_(True)).order_by(Service.name)
+    ).all()
+    barbers = db.session.scalars(
+        select(Barber).options(selectinload(Barber.services)).order_by(Barber.name)
+    ).all()
+    return {
+        "services": [serialize_service(service) for service in services],
+        "barbers": [serialize_barber(barber) for barber in barbers],
+        "appointments": [],
     }
 
 
@@ -356,8 +368,29 @@ def appointment_slot_error(selection, exclude_appointment_id=None, context=None)
     return None
 
 
-@api.get("/uploads/<path:filename>")
-def uploaded_image(filename):
+@pages.get("/")
+def home():
+    try:
+        bootstrap = load_catalog()
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("Could not load catalog for homepage")
+        bootstrap = {"services": [], "barbers": [], "appointments": []}
+    return render_template("index.html", bootstrap=bootstrap)
+
+
+@pages.get("/login")
+def login():
+    return render_template("admin/login.html")
+
+
+@pages.get("/admin")
+def admin_dashboard():
+    return render_template("admin/dashboard.html")
+
+
+@pages.get("/uploads/<path:filename>")
+def haircut_image(filename):
     return send_from_directory(current_app.config["UPLOAD_FOLDER"], filename)
 
 
@@ -584,6 +617,22 @@ def list_haircuts(barber_id):
         .order_by(Haircut.created_at.desc(), Haircut.id.desc())
     ).all()
     return jsonify([serialize_haircut(haircut) for haircut in haircuts])
+
+
+@api.get("/haircuts")
+def public_haircuts():
+    haircuts = db.session.scalars(
+        select(Haircut)
+        .join(Barber, Haircut.barber_id == Barber.id)
+        .options(selectinload(Haircut.barber))
+        .order_by(Haircut.created_at.desc(), Haircut.id.desc())
+    ).all()
+    return jsonify(
+        [
+            {**serialize_haircut(haircut), "barberName": haircut.barber.name}
+            for haircut in haircuts
+        ]
+    )
 
 
 @api.get("/barber/haircuts")

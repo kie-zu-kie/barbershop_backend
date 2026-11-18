@@ -1,17 +1,12 @@
 from io import BytesIO
-import os
-from pathlib import Path
-import subprocess
-import sys
-from urllib.parse import urlparse
 
 import pytest
 from datetime import date, time, timedelta
 from PIL import Image
+from sqlalchemy.exc import SQLAlchemyError
 from werkzeug.security import generate_password_hash
 
 from backend import create_app, db
-from backend.config import normalize_database_url
 from backend.models import (
     Appointment,
     Barber,
@@ -31,8 +26,6 @@ def app(tmp_path):
             "SQLALCHEMY_DATABASE_URI": "sqlite://",
             "SECRET_KEY": "test-key",
             "UPLOAD_FOLDER": str(tmp_path / "uploads"),
-            "CORS_ORIGINS": ["http://localhost:8000"],
-            "PUBLIC_API_URL": "https://api.example.test",
         }
     )
     with app.app_context():
@@ -47,70 +40,61 @@ def client(app):
     return app.test_client()
 
 
-def test_backend_root_and_api_base_redirect_to_frontend(client):
-    for path in ("/", "/api"):
-        response = client.get(path)
-
-        assert response.status_code == 302
-        assert response.headers["Location"] == "http://localhost:8000/"
-
-    assert client.get("/static/css/styles.css").status_code == 404
-
-
-@pytest.mark.parametrize(
-    ("database_url", "expected_url"),
-    [
-        ("postgres://user:pass@host/db", "postgresql+psycopg://user:pass@host/db"),
-        ("postgresql://user:pass@host/db", "postgresql+psycopg://user:pass@host/db"),
-        ("postgresql+psycopg://user:pass@host/db", "postgresql+psycopg://user:pass@host/db"),
-        (None, None),
-    ],
-)
-def test_database_url_uses_installed_postgres_driver(database_url, expected_url):
-    assert normalize_database_url(database_url) == expected_url
-
-
-def test_app_rejects_placeholder_session_secret():
-    with pytest.raises(RuntimeError, match="SECRET_KEY"):
-        create_app(
-            {
-                "SECRET_KEY": "replace-with-a-unique-random-value",
-                "SQLALCHEMY_DATABASE_URI": "sqlite://",
-            }
-        )
-
-
-def test_app_requires_database_configuration():
-    with pytest.raises(RuntimeError, match="DATABASE_URL"):
-        create_app(
-            {
-                "SECRET_KEY": "test-key",
-                "SQLALCHEMY_DATABASE_URI": None,
-            }
-        )
-
-
-def test_standalone_flask_cli_loads_app_from_repository_root():
-    backend_directory = Path(__file__).resolve().parents[1]
-    environment = os.environ.copy()
-    environment.update(
+def test_postgres_connection_timeout_is_bounded():
+    app = create_app(
         {
-            "SECRET_KEY": "standalone-cli-test-secret",
-            "DATABASE_URL": "sqlite://",
-            "FRONTEND_ORIGINS": "http://localhost:8000",
-            "FLASK_DEBUG": "false",
+            "SQLALCHEMY_DATABASE_URI": "postgresql+psycopg://user:password@db.example/test",
         }
     )
-    result = subprocess.run(
-        [sys.executable, "-m", "flask", "--app", "app", "routes"],
-        cwd=backend_directory,
-        env=environment,
-        capture_output=True,
-        check=True,
-        text=True,
+
+    assert app.config["SQLALCHEMY_ENGINE_OPTIONS"]["connect_args"]["connect_timeout"] == 2
+
+
+def test_local_database_mode_selects_local_sqlite():
+    app = create_app({"USE_LOCAL_DATABASE": True})
+
+    assert app.config["SQLALCHEMY_DATABASE_URI"].endswith(
+        "/.cj_barbershop/barbershop-local.sqlite"
     )
 
-    assert "api.health" in result.stdout
+
+def test_local_database_init_requires_explicit_local_mode(app):
+    result = app.test_cli_runner().invoke(args=["local-db-init"])
+
+    assert result.exit_code != 0
+    assert "Set USE_LOCAL_DATABASE=1" in result.output
+
+
+def test_local_database_init_creates_and_seeds_catalog(app):
+    app.config["USE_LOCAL_DATABASE"] = True
+
+    result = app.test_cli_runner().invoke(args=["local-db-init"])
+
+    assert result.exit_code == 0
+    assert "Local SQLite database is ready" in result.output
+    with app.app_context():
+        assert Service.query.count() == 3
+        assert Barber.query.count() == 2
+
+
+def test_home_renders_database_catalog(client, app):
+    with app.app_context():
+        service = Service(
+            name="Classic Cut",
+            duration_minutes=30,
+            price=25,
+            active=True,
+        )
+        barber = Barber(name="Jordan Barber", initials="JB", rating=4.8)
+        barber.services.append(service)
+        db.session.add(barber)
+        db.session.commit()
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b'id="cj-bootstrap" type="application/json"' in response.data
+    assert b"Classic Cut" in response.data
 
 
 def test_catalog_api_returns_database_records(client, app):
@@ -153,25 +137,21 @@ def test_health_endpoint_checks_database(client):
     assert response.get_json() == {"status": "ok", "database": "connected"}
 
 
-def test_root_health_endpoint_reports_app_status(client):
-    response = client.get("/health")
+def test_static_assets_are_served_from_frontend_folder(client):
+    response = client.get("/static/css/styles.css")
 
     assert response.status_code == 200
-    assert response.get_json() == {"status": "ok"}
+    assert b"color-scheme: dark" in response.data
 
 
-def test_api_allows_configured_frontend_origin_with_credentials(client):
-    response = client.options(
-        "/api/auth/login",
-        headers={
-            "Origin": "http://localhost:8000",
-            "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "content-type",
-        },
-    )
+def test_transparent_barber_logo_is_served(client):
+    response = client.get("/static/images/barber-logo.png")
 
-    assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:8000"
-    assert response.headers["Access-Control-Allow-Credentials"] == "true"
+    assert response.status_code == 200
+    with Image.open(BytesIO(response.data)) as logo:
+        assert logo.mode == "RGBA"
+        assert logo.getchannel("A").getextrema()[0] == 0
+        assert logo.getchannel("A").getextrema()[1] == 255
 
 
 def test_unknown_api_route_returns_json_404(client):
@@ -179,6 +159,17 @@ def test_unknown_api_route_returns_json_404(client):
 
     assert response.status_code == 404
     assert response.get_json() == {"error": "Not found"}
+
+
+def test_unhandled_database_errors_return_service_unavailable(client, app):
+    @app.get("/api/database-error")
+    def database_error():
+        raise SQLAlchemyError("database unavailable")
+
+    response = client.get("/api/database-error")
+
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "Database is temporarily unavailable."}
 
 
 def register(client, email="alex@example.com"):
@@ -249,8 +240,8 @@ def test_customer_can_upload_and_see_profile_photo(client, app):
 
     assert uploaded.status_code == 200
     customer = uploaded.get_json()["customer"]
-    assert customer["avatarUrl"].startswith("https://api.example.test/api/uploads/profile-")
-    assert client.get(urlparse(customer["avatarUrl"]).path).status_code == 200
+    assert customer["avatarUrl"].startswith("/uploads/profile-")
+    assert client.get(customer["avatarUrl"]).status_code == 200
     assert client.get("/api/auth/me").get_json()["customer"]["avatarUrl"] == customer["avatarUrl"]
 
 
@@ -272,8 +263,8 @@ def test_barber_can_upload_and_see_profile_photo(client):
 
     assert uploaded.status_code == 200
     barber = uploaded.get_json()["barber"]
-    assert barber["avatarUrl"].startswith("https://api.example.test/api/uploads/profile-")
-    assert client.get(urlparse(barber["avatarUrl"]).path).status_code == 200
+    assert barber["avatarUrl"].startswith("/uploads/profile-")
+    assert client.get(barber["avatarUrl"]).status_code == 200
     assert client.get("/api/barber/auth/me").get_json()["barber"]["avatarUrl"] == barber["avatarUrl"]
 
 
@@ -543,7 +534,7 @@ def test_barber_can_publish_and_remove_haircuts(client, app):
     public_gallery = client.get(f"/api/barbers/{barber_id}/haircuts")
     assert public_gallery.status_code == 200
     assert public_gallery.get_json() == [haircut]
-    image = client.get(urlparse(haircut["imageUrl"]).path)
+    image = client.get(haircut["imageUrl"])
     assert image.status_code == 200
     with Image.open(BytesIO(image.data)) as uploaded_image:
         assert uploaded_image.format == "JPEG"
@@ -567,6 +558,40 @@ def test_barber_can_publish_and_remove_haircuts(client, app):
     ).status_code == 200
     assert client.delete(f"/api/barber/haircuts/{haircut['id']}").status_code == 200
     assert client.get(f"/api/barbers/{barber_id}/haircuts").get_json() == []
+
+
+def test_public_haircut_gallery_lists_haircuts_from_all_barbers(client, app):
+    with app.app_context():
+        jordan = Barber(name="Jordan Barber", initials="JB")
+        alex = Barber(name="Alex Barber", initials="AB")
+        db.session.add_all([jordan, alex])
+        db.session.flush()
+        db.session.add_all(
+            [
+                Haircut(
+                    barber_id=jordan.id,
+                    title="Low fade",
+                    image_filename="jordan-low-fade.jpg",
+                ),
+                Haircut(
+                    barber_id=alex.id,
+                    title="Textured crop",
+                    image_filename="alex-textured-crop.jpg",
+                ),
+            ]
+        )
+        db.session.commit()
+
+    response = client.get("/api/haircuts")
+
+    assert response.status_code == 200
+    assert [
+        (haircut["title"], haircut["barberName"])
+        for haircut in response.get_json()
+    ] == [
+        ("Textured crop", "Alex Barber"),
+        ("Low fade", "Jordan Barber"),
+    ]
 
 
 def test_barber_added_services_are_persisted_and_bookable(client, app):

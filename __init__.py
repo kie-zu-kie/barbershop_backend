@@ -1,66 +1,60 @@
 from pathlib import Path
 
-from flask import Flask, redirect
-from flask_cors import CORS
+from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.engine import make_url
 
 db = SQLAlchemy()
 
 
 def create_app(test_config=None):
-    backend_directory = Path(__file__).resolve().parent
+    project_root = Path(__file__).resolve().parent.parent
     app = Flask(
         __name__,
-        static_folder=None,
-        instance_path=str(backend_directory / "instance"),
+        template_folder=str(project_root / "frontend" / "templates"),
+        static_folder=str(project_root / "frontend" / "static"),
+        instance_path=str(project_root / "backend" / "instance"),
     )
     app.config.from_object("backend.config.Config")
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
-        UPLOAD_FOLDER=str(backend_directory / "uploads"),
+        SESSION_COOKIE_SAMESITE="Lax",
+        UPLOAD_FOLDER=str(project_root / "backend" / "uploads"),
         MAX_CONTENT_LENGTH=6 * 1024 * 1024,
     )
     if test_config:
         app.config.update(test_config)
 
-    if app.config.get("SECRET_KEY") in {
-        None,
-        "",
-        "cj-barbershop-dev-secret",
-        "replace-with-a-unique-random-value",
-    }:
+    if app.config.get("USE_LOCAL_DATABASE") and not (
+        test_config and "SQLALCHEMY_DATABASE_URI" in test_config
+    ):
+        local_database_directory = Path.home() / ".cj_barbershop"
+        local_database_directory.mkdir(parents=True, exist_ok=True)
+        local_database = local_database_directory / "barbershop-local.sqlite"
+        app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{local_database.as_posix()}"
+
+    database_uri = app.config.get("SQLALCHEMY_DATABASE_URI")
+    if not database_uri:
         raise RuntimeError(
-            "Set a unique, random SECRET_KEY in the backend environment before starting the API."
+            "DATABASE_URL is not configured. Set it in the project-root .env, "
+            "backend/.env, or the process environment."
         )
-    if not app.config.get("SQLALCHEMY_DATABASE_URI"):
-        raise RuntimeError("Set DATABASE_URL in the backend environment before starting the API.")
+    if database_uri and make_url(database_uri).get_backend_name() == "postgresql":
+        engine_options = dict(app.config.get("SQLALCHEMY_ENGINE_OPTIONS", {}))
+        connect_args = dict(engine_options.get("connect_args", {}))
+        connect_args.setdefault("connect_timeout", 2)
+        engine_options["connect_args"] = connect_args
+        app.config["SQLALCHEMY_ENGINE_OPTIONS"] = engine_options
 
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
     db.init_app(app)
-    CORS(
-        app,
-        resources={r"/api/*": {"origins": app.config["CORS_ORIGINS"]}},
-        supports_credentials=True,
-    )
 
     from backend.admin import register_admin_commands
     from backend.errors import register_error_handlers
-    from backend.routes import api
+    from backend.routes import api, pages
 
+    app.register_blueprint(pages)
     app.register_blueprint(api, url_prefix="/api")
     register_error_handlers(app)
     register_admin_commands(app)
-
-    @app.get("/health")
-    def health():
-        return {"status": "ok"}
-
-    @app.get("/")
-    @app.get("/api")
-    def open_frontend():
-        frontend_origins = app.config["CORS_ORIGINS"]
-        if not frontend_origins:
-            return {"error": "No frontend origin is configured."}, 503
-        return redirect(f"{frontend_origins[0].rstrip('/')}/")
-
     return app

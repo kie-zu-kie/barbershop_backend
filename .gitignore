@@ -1,8 +1,1 @@
 .env
-__pycache__/
-*.py[cod]
-.pytest_cache/
-instance/*
-!instance/.gitkeep
-uploads/*
-!uploads/.gitkeep

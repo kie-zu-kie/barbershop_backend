@@ -20,6 +20,20 @@ def create_portal_tables(tables=None):
 
 
 def register_admin_commands(app):
+    @app.cli.command("local-db-init")
+    def local_db_init():
+        """Create and seed the explicitly selected local SQLite database."""
+        if not app.config.get("USE_LOCAL_DATABASE"):
+            raise click.ClickException(
+                "Set USE_LOCAL_DATABASE=1 before initializing the local database."
+            )
+
+        from backend.seed import seed_demo_data
+
+        db.create_all()
+        seed_demo_data()
+        click.echo("Local SQLite database is ready. Register a customer account in the app.")
+
     @app.cli.command("barber-portal-init")
     def barber_portal_init():
         """Create only the additive barber portal tables."""
