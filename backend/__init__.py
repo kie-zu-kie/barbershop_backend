@@ -19,7 +19,7 @@ def create_app(test_config=None):
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
-        UPLOAD_FOLDER=str(project_root / "backend" / "uploads"),
+        UPLOAD_FOLDER=str(project_root / "uploads"),
         MAX_CONTENT_LENGTH=6 * 1024 * 1024,
     )
     if test_config:
