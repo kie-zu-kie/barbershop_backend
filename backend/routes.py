@@ -376,7 +376,7 @@ def home():
         db.session.rollback()
         current_app.logger.exception("Could not load catalog for homepage")
         bootstrap = {"services": [], "barbers": [], "appointments": []}
-    return render_template("index.html", bootstrap=bootstrap)
+    return jsonify({"status": "ok", "service": "barbershop backend"})
 
 
 @pages.get("/login")

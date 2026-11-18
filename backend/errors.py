@@ -21,10 +21,10 @@ def register_error_handlers(app):
         app.logger.exception("Unhandled server error", exc_info=error)
         if request.path.startswith("/api/"):
             return jsonify(error="Internal server error"), 500
-        return render_template("500.html"), 500
+        return jsonify({"error": "Internal server error"}), 500
 
     @app.errorhandler(413)
     def request_too_large(error):
         if request.path.startswith("/api/"):
             return jsonify(error="Upload is too large. Maximum request size is 6 MB."), 413
-        return "Upload is too large.", 413
+        return jsonify(error="Upload is too large."), 413
