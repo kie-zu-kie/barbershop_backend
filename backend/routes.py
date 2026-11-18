@@ -8,7 +8,6 @@ from flask import (
     Blueprint,
     current_app,
     jsonify,
-    render_template,
     request,
     send_from_directory,
     session,
@@ -370,23 +369,22 @@ def appointment_slot_error(selection, exclude_appointment_id=None, context=None)
 
 @pages.get("/")
 def home():
-    try:
-        bootstrap = load_catalog()
-    except SQLAlchemyError:
-        db.session.rollback()
-        current_app.logger.exception("Could not load catalog for homepage")
-        bootstrap = {"services": [], "barbers": [], "appointments": []}
-    return jsonify({"status": "ok", "service": "barbershop backend"})
+    return jsonify(status="ok", service="barbershop backend")
+
+
+@pages.get("/health")
+def service_health():
+    return jsonify(status="ok")
 
 
 @pages.get("/login")
 def login():
-    return render_template("admin/login.html")
+    return api_error("This backend only serves the API.", 404)
 
 
 @pages.get("/admin")
 def admin_dashboard():
-    return render_template("admin/dashboard.html")
+    return api_error("This backend only serves the API.", 404)
 
 
 @pages.get("/uploads/<path:filename>")

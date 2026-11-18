@@ -7,7 +7,7 @@ def register_error_handlers(app):
     def not_found(error):
         if request.path.startswith("/api/"):
             return jsonify(error="Not found"), 404
-        return render_template("404.html"), 404
+        return jsonify({"error": "Internal server error"}), 500
 
     @app.errorhandler(SQLAlchemyError)
     def database_unavailable(error):
